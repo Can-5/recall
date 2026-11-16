@@ -10,7 +10,7 @@
 //! text — no regex is accepted from untrusted input.
 
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
 pub const DEFAULT_CAPACITY: usize = 500;
@@ -184,6 +184,49 @@ impl RecallHistory {
     pub fn recent(&self, limit: usize) -> Vec<&HistoryEntry> {
         self.entries.iter().rev().take(limit).collect()
     }
+
+    /// Remove *consecutive* entries that share kind and payload (`text`).
+    /// The first entry of each run is kept. Returns how many were removed.
+    pub fn dedupe_consecutive(&mut self) -> usize {
+        let mut removed = 0usize;
+        let mut i = 1;
+        while i < self.entries.len() {
+            let (prev, cur) = (&self.entries[i - 1], &self.entries[i]);
+            if prev.kind == cur.kind && prev.text == cur.text {
+                self.entries.remove(i);
+                removed += 1;
+            } else {
+                i += 1;
+            }
+        }
+        removed
+    }
+
+    /// Point-in-time totals over the current history.
+    pub fn stats(&self) -> Stats {
+        let mut by_kind: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut favorites = 0usize;
+        for e in &self.entries {
+            let kind = match e.kind {
+                EntryKind::Text => "text",
+                EntryKind::Image => "image",
+                EntryKind::Link => "link",
+            };
+            *by_kind.entry(kind).or_default() += 1;
+            if e.favorite {
+                favorites += 1;
+            }
+        }
+        Stats { total: self.entries.len(), favorites, by_kind }
+    }
+}
+
+/// Aggregate counts over a [`RecallHistory`]. `by_kind` keys: "text" | "image" | "link".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Stats {
+    pub total: usize,
+    pub favorites: usize,
+    pub by_kind: BTreeMap<&'static str, usize>,
 }
 
 #[cfg(test)]
@@ -243,6 +286,47 @@ mod tests {
         h.push(entry("3", "unrelated", 3));
         let hits: Vec<_> = h.search("HELLO").iter().map(|e| e.id.as_str()).collect();
         assert_eq!(hits, vec!["2", "1"]);
+    }
+
+    #[test]
+    fn dedupe_consecutive_removes_only_runs() {
+        let mut h = RecallHistory::with_capacity(10).unwrap();
+        h.push(entry("1", "same", 1));
+        h.push(entry("2", "same", 2));
+        h.push(entry("3", "other", 3));
+        h.push(entry("4", "same", 4)); // not consecutive to 1/2 — kept
+        h.push(entry("5", "same", 5));
+        let mut img = entry("6", "same", 6);
+        img.kind = EntryKind::Image;
+        h.push(img); // same text, different kind — kept
+        assert_eq!(h.dedupe_consecutive(), 2); // ids 2 and 5 removed
+        let ids: Vec<_> = h.recent(10).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["6", "4", "3", "1"]);
+        assert_eq!(h.dedupe_consecutive(), 0);
+    }
+
+    #[test]
+    fn stats_totals_and_by_kind() {
+        let mut h = RecallHistory::with_capacity(10).unwrap();
+        h.push(entry("1", "a", 1));
+        h.push(entry("2", "b", 2));
+        let mut img = entry("3", "c", 3);
+        img.kind = EntryKind::Image;
+        h.push(img);
+        let mut link = entry("4", "d", 4);
+        link.kind = EntryKind::Link;
+        h.push(link);
+        h.toggle_favorite("2");
+        let s = h.stats();
+        assert_eq!(s.total, 4);
+        assert_eq!(s.favorites, 1);
+        assert_eq!(s.by_kind.get("text"), Some(&2));
+        assert_eq!(s.by_kind.get("image"), Some(&1));
+        assert_eq!(s.by_kind.get("link"), Some(&1));
+        h.clear();
+        let empty = h.stats();
+        assert_eq!(empty.total, 0);
+        assert!(empty.by_kind.is_empty());
     }
 
     #[test]
