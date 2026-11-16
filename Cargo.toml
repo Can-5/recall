@@ -1,0 +1,13 @@
+[package]
+name = "recall"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local-first clipboard & text-history domain engine for Orbit: capped history, favorites, search, exclusion rules. No OS clipboard access lives here."
+repository = "https://github.com/Can-5/recall"
+keywords = ["clipboard", "history", "orbit"]
+categories = ["utilities"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
